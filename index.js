@@ -1,19 +1,12 @@
-const { 
-  Client, 
-  GatewayIntentBits, 
-  PermissionsBitField 
-} = require('discord.js');
-
-const { 
-  joinVoiceChannel, 
-  getVoiceConnection, 
-  createAudioPlayer, 
+const { Client, GatewayIntentBits } = require("discord.js");
+const {
+  joinVoiceChannel,
+  createAudioPlayer,
   createAudioResource,
-  AudioPlayerStatus,
-  NoSubscriberBehavior
-} = require('@discordjs/voice');
-
-const play = require('play-dl');
+  getVoiceConnection,
+  AudioPlayerStatus
+} = require("@discordjs/voice");
+const { spawn } = require("child_process");
 
 const client = new Client({
   intents: [
@@ -24,29 +17,14 @@ const client = new Client({
   ]
 });
 
-const TOKEN = process.env.TOKEN;
-
 const players = new Map();
 
-function getPlayer(guildId) {
-  if (!players.has(guildId)) {
-    const player = createAudioPlayer({
-      behaviors: {
-        noSubscriber: NoSubscriberBehavior.Pause
-      }
-    });
-    players.set(guildId, player);
-  }
-  return players.get(guildId);
-}
-
-client.once('ready', () => {
+client.once("ready", () => {
   console.log(`✅ Connecté en tant que ${client.user.tag}`);
 });
 
-client.on('messageCreate', async (message) => {
-  if (message.author.bot) return;
-  if (!message.guild) return;
+client.on("messageCreate", async (message) => {
+  if (!message.guild || message.author.bot) return;
 
   const args = message.content.trim().split(/\s+/);
   const cmd = args.shift()?.toLowerCase();
@@ -55,27 +33,16 @@ client.on('messageCreate', async (message) => {
   // JOIN
   // =========================
   if (cmd === "!join") {
-    const member = await message.guild.members.fetch(message.author.id);
-    const channel = member.voice.channel;
-
-    if (!channel) return message.reply("❌ Va dans un salon vocal.");
-
-    const botMember = await message.guild.members.fetchMe();
-    const perms = channel.permissionsFor(botMember);
-
-    if (!perms.has(PermissionsBitField.Flags.Connect))
-      return message.reply("❌ Je ne peux pas me connecter.");
-    if (!perms.has(PermissionsBitField.Flags.Speak))
-      return message.reply("❌ Je ne peux pas parler.");
+    const channel = message.member.voice.channel;
+    if (!channel) return message.reply("❌ Va en vocal.");
 
     joinVoiceChannel({
       channelId: channel.id,
       guildId: message.guild.id,
-      adapterCreator: message.guild.voiceAdapterCreator,
-      selfDeaf: true
+      adapterCreator: message.guild.voiceAdapterCreator
     });
 
-    return message.reply(`✅ Je rejoins ${channel.name}`);
+    return message.reply("✅ Je rejoins le vocal.");
   }
 
   // =========================
@@ -96,38 +63,57 @@ client.on('messageCreate', async (message) => {
   // =========================
   if (cmd === "!play") {
     const url = args[0];
-    if (!url) return message.reply("❌ Utilisation : !play <lien YouTube>");
+    if (!url) return message.reply("❌ Mets un lien YouTube.");
 
-    const member = await message.guild.members.fetch(message.author.id);
-    const channel = member.voice.channel;
-
-    if (!channel) return message.reply("❌ Va dans un salon vocal.");
-
-    if (!play.yt_validate(url))
-      return message.reply("❌ Lien YouTube invalide.");
+    const channel = message.member.voice.channel;
+    if (!channel) return message.reply("❌ Va en vocal.");
 
     const connection = joinVoiceChannel({
       channelId: channel.id,
       guildId: message.guild.id,
-      adapterCreator: message.guild.voiceAdapterCreator,
-      selfDeaf: false
+      adapterCreator: message.guild.voiceAdapterCreator
     });
 
-    const player = getPlayer(message.guild.id);
+    const player = createAudioPlayer();
     connection.subscribe(player);
 
     try {
-      const stream = await play.stream(url, {
-        discordPlayerCompatibility: true
-      });
+      const yt = spawn("yt-dlp", [
+        "-f",
+        "bestaudio",
+        "-o",
+        "-",
+        url
+      ]);
 
-      const resource = createAudioResource(stream.stream, {
-        inputType: stream.type
-      });
+      const ffmpeg = spawn("ffmpeg", [
+        "-i",
+        "pipe:0",
+        "-f",
+        "s16le",
+        "-ar",
+        "48000",
+        "-ac",
+        "2",
+        "pipe:1"
+      ]);
 
+      yt.stdout.pipe(ffmpeg.stdin);
+
+      const resource = createAudioResource(ffmpeg.stdout);
       player.play(resource);
 
-      return message.reply("▶️ Lecture en cours !");
+      players.set(message.guild.id, player);
+
+      player.on(AudioPlayerStatus.Playing, () => {
+        console.log("▶️ Lecture en cours");
+      });
+
+      player.on("error", (error) => {
+        console.error("Erreur player :", error);
+      });
+
+      return message.reply("▶️ Lecture lancée !");
     } catch (err) {
       console.error(err);
       return message.reply("❌ Erreur lecture.");
@@ -148,7 +134,7 @@ client.on('messageCreate', async (message) => {
   // =========================
   // RESUME
   // =========================
-  if (cmd === "!resume" || cmd === "!résumé") {
+  if (cmd === "!resume") {
     const player = players.get(message.guild.id);
     if (!player) return message.reply("❌ Rien à reprendre.");
 
@@ -168,4 +154,4 @@ client.on('messageCreate', async (message) => {
   }
 });
 
-client.login(TOKEN);
+client.login(process.env.TOKEN);
