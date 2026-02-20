@@ -1,49 +1,43 @@
-const { Client, GatewayIntentBits, PermissionsBitField } = require('discord.js');
-const {
-  joinVoiceChannel,
-  getVoiceConnection,
-  createAudioPlayer,
+const { 
+  Client, 
+  GatewayIntentBits, 
+  PermissionsBitField 
+} = require('discord.js');
+
+const { 
+  joinVoiceChannel, 
+  getVoiceConnection, 
+  createAudioPlayer, 
   createAudioResource,
-  NoSubscriberBehavior,
+  AudioPlayerStatus,
+  NoSubscriberBehavior
 } = require('@discordjs/voice');
 
 const play = require('play-dl');
-const ffmpegPath = require('ffmpeg-static');
-
-// ✅ Force play-dl à utiliser ffmpeg-static (Railway)
-try {
-  if (ffmpegPath) {
-    process.env.FFMPEG_PATH = ffmpegPath;
-    if (typeof play.setFFmpegPath === 'function') play.setFFmpegPath(ffmpegPath);
-  }
-} catch (e) {
-  console.log("⚠️ Impossible de définir ffmpegPath:", e);
-}
 
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildVoiceStates,
-  ],
+    GatewayIntentBits.GuildVoiceStates
+  ]
 });
 
 const TOKEN = process.env.TOKEN;
 
-// 1 player par serveur
-const audioMap = new Map(); // guildId -> { player }
+const players = new Map();
 
-function getOrCreatePlayer(guildId) {
-  let data = audioMap.get(guildId);
-  if (!data) {
+function getPlayer(guildId) {
+  if (!players.has(guildId)) {
     const player = createAudioPlayer({
-      behaviors: { noSubscriber: NoSubscriberBehavior.Pause },
+      behaviors: {
+        noSubscriber: NoSubscriberBehavior.Pause
+      }
     });
-    data = { player };
-    audioMap.set(guildId, data);
+    players.set(guildId, player);
   }
-  return data.player;
+  return players.get(guildId);
 }
 
 client.once('ready', () => {
@@ -51,129 +45,126 @@ client.once('ready', () => {
 });
 
 client.on('messageCreate', async (message) => {
-  try {
-    if (message.author.bot) return;
-    if (!message.guild) return;
+  if (message.author.bot) return;
+  if (!message.guild) return;
 
-    const args = message.content.trim().split(/\s+/);
-    const cmd = (args.shift() || '').toLowerCase();
+  const args = message.content.trim().split(/\s+/);
+  const cmd = args.shift()?.toLowerCase();
 
-    // ======================
-    // !join
-    // ======================
-    if (cmd === '!join') {
-      const member = await message.guild.members.fetch(message.author.id);
-      const voiceChannel = member.voice?.channel;
+  // =========================
+  // JOIN
+  // =========================
+  if (cmd === "!join") {
+    const member = await message.guild.members.fetch(message.author.id);
+    const channel = member.voice.channel;
 
-      if (!voiceChannel) return message.reply('❌ Va dans un salon vocal.');
+    if (!channel) return message.reply("❌ Va dans un salon vocal.");
 
-      const botMember = await message.guild.members.fetchMe();
-      const perms = voiceChannel.permissionsFor(botMember);
-      if (!perms?.has(PermissionsBitField.Flags.Connect)) {
-        return message.reply("❌ Je n'ai pas la permission **Se connecter**.");
-      }
+    const botMember = await message.guild.members.fetchMe();
+    const perms = channel.permissionsFor(botMember);
 
-      joinVoiceChannel({
-        channelId: voiceChannel.id,
-        guildId: message.guild.id,
-        adapterCreator: message.guild.voiceAdapterCreator,
-        selfDeaf: true,
+    if (!perms.has(PermissionsBitField.Flags.Connect))
+      return message.reply("❌ Je ne peux pas me connecter.");
+    if (!perms.has(PermissionsBitField.Flags.Speak))
+      return message.reply("❌ Je ne peux pas parler.");
+
+    joinVoiceChannel({
+      channelId: channel.id,
+      guildId: message.guild.id,
+      adapterCreator: message.guild.voiceAdapterCreator,
+      selfDeaf: true
+    });
+
+    return message.reply(`✅ Je rejoins ${channel.name}`);
+  }
+
+  // =========================
+  // LEAVE
+  // =========================
+  if (cmd === "!leave") {
+    const connection = getVoiceConnection(message.guild.id);
+    if (!connection) return message.reply("❌ Je ne suis pas en vocal.");
+
+    connection.destroy();
+    players.delete(message.guild.id);
+
+    return message.reply("👋 Je quitte le vocal.");
+  }
+
+  // =========================
+  // PLAY
+  // =========================
+  if (cmd === "!play") {
+    const url = args[0];
+    if (!url) return message.reply("❌ Utilisation : !play <lien YouTube>");
+
+    const member = await message.guild.members.fetch(message.author.id);
+    const channel = member.voice.channel;
+
+    if (!channel) return message.reply("❌ Va dans un salon vocal.");
+
+    if (!play.yt_validate(url))
+      return message.reply("❌ Lien YouTube invalide.");
+
+    const connection = joinVoiceChannel({
+      channelId: channel.id,
+      guildId: message.guild.id,
+      adapterCreator: message.guild.voiceAdapterCreator,
+      selfDeaf: false
+    });
+
+    const player = getPlayer(message.guild.id);
+    connection.subscribe(player);
+
+    try {
+      const stream = await play.stream(url, {
+        discordPlayerCompatibility: true
       });
 
-      return message.reply(`✅ Je rejoins **${voiceChannel.name}**`);
-    }
-
-    // ======================
-    // !leave
-    // ======================
-    if (cmd === '!leave') {
-      const conn = getVoiceConnection(message.guild.id);
-      if (!conn) return message.reply("❌ Je ne suis pas en vocal.");
-
-      conn.destroy();
-      audioMap.delete(message.guild.id);
-
-      return message.reply("👋 J'ai quitté le vocal.");
-    }
-
-    // ======================
-    // !play <lien youtube>
-    // ======================
-    if (cmd === '!play') {
-      const url = args[0];
-      if (!url) return message.reply("❌ Utilisation : `!play <lien YouTube>`");
-
-      const member = await message.guild.members.fetch(message.author.id);
-      const voiceChannel = member.voice?.channel;
-      if (!voiceChannel) return message.reply("❌ Va dans un salon vocal puis refais `!play`.");
-
-      const botMember = await message.guild.members.fetchMe();
-      const perms = voiceChannel.permissionsFor(botMember);
-
-      if (!perms?.has(PermissionsBitField.Flags.Connect))
-        return message.reply("❌ Je ne peux pas me connecter.");
-      if (!perms?.has(PermissionsBitField.Flags.Speak))
-        return message.reply("❌ Je ne peux pas parler.");
-
-      if (!play.yt_validate(url)) return message.reply("❌ Lien YouTube invalide.");
-
-      // rejoint (ou reconnecte)
-      const connection = joinVoiceChannel({
-        channelId: voiceChannel.id,
-        guildId: message.guild.id,
-        adapterCreator: message.guild.voiceAdapterCreator,
-        selfDeaf: false,
+      const resource = createAudioResource(stream.stream, {
+        inputType: stream.type
       });
 
-      const player = getOrCreatePlayer(message.guild.id);
-      connection.subscribe(player);
+      player.play(resource);
 
-      try {
-        const info = await play.video_info(url);
-        const stream = await play.stream_from_info(info); // play-dl gère ffmpeg
-
-        const resource = createAudioResource(stream.stream, { inputType: stream.type });
-        player.play(resource);
-
-        return message.reply(`▶️ Lecture : **${info.video_details.title}**`);
-      } catch (err) {
-        console.error(err);
-        return message.reply("❌ Erreur lecture (ffmpeg/YouTube). Regarde les logs Railway.");
-      }
+      return message.reply("▶️ Lecture en cours !");
+    } catch (err) {
+      console.error(err);
+      return message.reply("❌ Erreur lecture.");
     }
+  }
 
-    // ======================
-    // !pause
-    // ======================
-    if (cmd === '!pause') {
-      const data = audioMap.get(message.guild.id);
-      if (!data) return message.reply("❌ Rien à mettre en pause.");
-      data.player.pause();
-      return message.reply("⏸️ Pause.");
-    }
+  // =========================
+  // PAUSE
+  // =========================
+  if (cmd === "!pause") {
+    const player = players.get(message.guild.id);
+    if (!player) return message.reply("❌ Rien en cours.");
 
-    // ======================
-    // !resume / !résumé
-    // ======================
-    if (cmd === '!resume' || cmd === '!résumé') {
-      const data = audioMap.get(message.guild.id);
-      if (!data) return message.reply("❌ Rien à reprendre.");
-      data.player.unpause();
-      return message.reply("▶️ Reprise.");
-    }
+    player.pause();
+    return message.reply("⏸️ Pause.");
+  }
 
-    // ======================
-    // !stop (stop musique, reste en vocal)
-    // ======================
-    if (cmd === '!stop') {
-      const data = audioMap.get(message.guild.id);
-      if (!data) return message.reply("❌ Rien en cours.");
-      data.player.stop(true);
-      return message.reply("⏹️ Musique arrêtée.");
-    }
-  } catch (err) {
-    console.error(err);
-    if (message?.channel) message.reply("❌ Erreur. Regarde les logs Railway.");
+  // =========================
+  // RESUME
+  // =========================
+  if (cmd === "!resume" || cmd === "!résumé") {
+    const player = players.get(message.guild.id);
+    if (!player) return message.reply("❌ Rien à reprendre.");
+
+    player.unpause();
+    return message.reply("▶️ Reprise.");
+  }
+
+  // =========================
+  // STOP
+  // =========================
+  if (cmd === "!stop") {
+    const player = players.get(message.guild.id);
+    if (!player) return message.reply("❌ Rien à arrêter.");
+
+    player.stop();
+    return message.reply("⏹️ Musique arrêtée.");
   }
 });
 
