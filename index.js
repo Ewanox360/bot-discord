@@ -178,7 +178,9 @@ client.on("messageCreate", async (message) => {
         return message.reply("❌ Problème pour rejoindre le vocal (connexion).");
       }
 
-      return message.reply("✅ Je rejoins le vocal.");
+      return message.channel.send(
+  `✅ Je rejoins **"${vc.name}"**`
+);
     }
 
     // ===== LEAVE =====
@@ -297,7 +299,9 @@ client.on("messageCreate", async (message) => {
         );
       } catch (err) {
         console.error(err);
-        return message.reply("❌ Impossible de mute (permissions/hierarchie/erreur Discord).");
+        return message.channel.send(
+  `🔇 ${target.user.tag} mute ${durationRaw}\n📝 Raison : ${reason}`
+);
       }
     }
 
@@ -318,7 +322,9 @@ client.on("messageCreate", async (message) => {
 
       try {
         await target.timeout(null);
-        return message.reply(`✅ **${target.user.tag}** n'est plus mute.`);
+        return message.channel.send(
+  `🔊 ${target.user.tag} unmute.`
+);
       } catch (err) {
         console.error(err);
         return message.reply("❌ Impossible d'unmute (permissions/erreur Discord).");
