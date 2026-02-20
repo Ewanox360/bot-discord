@@ -1,7 +1,6 @@
 {
   "name": "bot-discord",
   "version": "1.0.0",
-  "description": "Bot Discord (commands + join voice)",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
@@ -11,6 +10,7 @@
   },
   "dependencies": {
     "discord.js": "^14.13.0",
-    "@discordjs/voice": "^0.18.0"
+    "@discordjs/voice": "^0.18.0",
+    "play-dl": "^1.9.7"
   }
 }
