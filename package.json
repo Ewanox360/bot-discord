@@ -1,6 +1,7 @@
 {
   "name": "bot-discord",
   "version": "1.0.0",
+  "description": "Bot Discord modération + vocal",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
