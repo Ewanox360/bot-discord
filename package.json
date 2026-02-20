@@ -1,6 +1,6 @@
 {
   "name": "bot-discord",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "Discord bot (voice join/leave + play YouTube)",
   "main": "index.js",
   "scripts": {
