@@ -1,8 +1,9 @@
 {
   "name": "bot-discord",
   "version": "1.0.0",
-  "description": "Discord moderation + vocal bot",
+  "description": "Bot Discord (join/leave + modération + mute timeout + donnermembre)",
   "main": "index.js",
+  "type": "commonjs",
   "scripts": {
     "start": "node index.js"
   },
@@ -10,8 +11,7 @@
     "node": ">=18"
   },
   "dependencies": {
-    "discord.js": "^14.14.1",
-    "@discordjs/voice": "^0.16.0",
-    "dotenv": "^16.4.5"
+    "@discordjs/voice": "^0.16.1",
+    "discord.js": "^14.16.3"
   }
 }
