@@ -1,22 +1,9 @@
-const {
-  Client,
-  GatewayIntentBits,
-  Partials,
-  PermissionsBitField,
-} = require("discord.js");
-
-const {
-  joinVoiceChannel,
-  getVoiceConnection,
-  VoiceConnectionStatus,
-  entersState,
-} = require("@discordjs/voice");
+const { Client, GatewayIntentBits, PermissionsBitField } = require("discord.js");
+const { joinVoiceChannel, getVoiceConnection } = require("@discordjs/voice");
 
 const PREFIX = "!";
-const MEMBER_ROLE_NAME = "Membre";
-
-// Railway: mets une variable d'env DISCORD_TOKEN
 const TOKEN = process.env.DISCORD_TOKEN;
+
 if (!TOKEN) {
   console.error("❌ DISCORD_TOKEN manquant dans Railway.");
   process.exit(1);
@@ -27,363 +14,249 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.MessageContent,
   ],
-  partials: [Partials.Channel],
 });
 
 client.once("ready", () => {
   console.log(`✅ Connecté en tant que ${client.user.tag}`);
 });
 
-/**
- * Parse des durées:
- * - "34s", "23m", "2h", "1j"
- * - "1h30m", "2h15m10s"
- * - "23min", "10minutes", "5sec", "2heures", "1jour"
- */
-function parseDurationToMs(inputRaw) {
-  if (!inputRaw || typeof inputRaw !== "string") return null;
-  const input = inputRaw.toLowerCase().replace(/\s+/g, "");
+// -------- Utils --------
 
-  // Autorise uniquement chiffres + lettres (unités)
-  if (!/^[0-9a-z]+$/.test(input)) return null;
+function parseDuration(input) {
+  // Accepte: 34s, 23m, 23min, 2h, 1j, 1d
+  if (!input) return null;
+  const str = input.toLowerCase().trim();
 
-  const unitMap = {
-    s: 1000,
-    sec: 1000,
-    secs: 1000,
-    seconde: 1000,
-    secondes: 1000,
+  // remplacements utiles
+  const normalized = str
+    .replace("mins", "min")
+    .replace("minutes", "min")
+    .replace("minute", "min")
+    .replace("sec", "s")
+    .replace("secs", "s")
+    .replace("secondes", "s")
+    .replace("seconde", "s")
+    .replace("heures", "h")
+    .replace("heure", "h")
+    .replace("jours", "j")
+    .replace("jour", "j");
 
-    m: 60 * 1000,
-    min: 60 * 1000,
-    mins: 60 * 1000,
-    minute: 60 * 1000,
-    minutes: 60 * 1000,
+  const match = normalized.match(/^(\d+)\s*(s|min|m|h|j|d)$/);
+  if (!match) return null;
 
-    h: 60 * 60 * 1000,
-    heure: 60 * 60 * 1000,
-    heures: 60 * 60 * 1000,
+  const value = parseInt(match[1], 10);
+  const unit = match[2];
 
-    j: 24 * 60 * 60 * 1000,
-    jour: 24 * 60 * 60 * 1000,
-    jours: 24 * 60 * 60 * 1000,
-    d: 24 * 60 * 60 * 1000, // au cas où
-    day: 24 * 60 * 60 * 1000,
-    days: 24 * 60 * 60 * 1000,
-  };
+  if (value <= 0) return null;
 
-  // Cherche toutes les paires (nombre)(unité)
-  const matches = input.matchAll(/(\d+)([a-z]+)/g);
+  // discord timeout max: 28 jours
+  const MAX_MS = 28 * 24 * 60 * 60 * 1000;
 
-  let total = 0;
-  let found = 0;
+  let ms = 0;
+  if (unit === "s") ms = value * 1000;
+  else if (unit === "m" || unit === "min") ms = value * 60 * 1000;
+  else if (unit === "h") ms = value * 60 * 60 * 1000;
+  else if (unit === "j" || unit === "d") ms = value * 24 * 60 * 60 * 1000;
 
-  for (const m of matches) {
-    const num = Number(m[1]);
-    const unit = m[2];
-
-    if (!Number.isFinite(num) || num <= 0) return null;
-    if (!unitMap[unit]) return null;
-
-    total += num * unitMap[unit];
-    found++;
-  }
-
-  // Si rien trouvé ou si la chaîne n'est pas entièrement consommée
-  // ex: "10mabc" => invalid
-  const rebuilt = Array.from(input.matchAll(/(\d+)([a-z]+)/g))
-    .map((x) => `${x[1]}${x[2]}`)
-    .join("");
-  if (found === 0 || rebuilt !== input) return null;
-
-  // Limite Discord timeout: max 28 jours
-  const max = 28 * 24 * 60 * 60 * 1000;
-  if (total > max) return { error: "TOO_LONG" };
-
-  return { ms: total };
+  if (ms > MAX_MS) return null;
+  return ms;
 }
 
-function hasPerm(member, perm) {
-  return member.permissions.has(perm);
+function prettyDuration(ms) {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h`;
+  const d = Math.floor(h / 24);
+  return `${d}j`;
 }
 
-function canModerate(me, target) {
-  // Le bot doit être au-dessus dans la hiérarchie
-  // target.roles.highest.position < me.roles.highest.position
-  return (
-    target.roles.highest.position < me.roles.highest.position &&
-    !target.user.bot // tu peux enlever ça si tu veux modérer des bots
-  );
+function getMemberFromMention(message, arg) {
+  if (!arg) return null;
+  const id = arg.replace(/[<@!>]/g, "");
+  return message.guild.members.cache.get(id) || null;
 }
+
+// -------- Commands --------
 
 client.on("messageCreate", async (message) => {
   try {
     if (message.author.bot) return;
-    if (!message.guild) return; // ignore DM
+    if (!message.guild) return;
     if (!message.content.startsWith(PREFIX)) return;
 
     const args = message.content.slice(PREFIX.length).trim().split(/\s+/);
     const cmd = (args.shift() || "").toLowerCase();
 
-    // ===== HELP (liste des commandes) =====
-    if (cmd === "help" || cmd === "aide" || cmd === "commandes") {
-      return message.reply(
-        [
-          "📌 **Commandes disponibles :**",
-          `• \`${PREFIX}join\` → je rejoins ton vocal`,
-          `• \`${PREFIX}leave\` → je quitte le vocal`,
-          `• \`${PREFIX}ban @membre [raison]\``,
-          `• \`${PREFIX}unban <ID>\``,
-          `• \`${PREFIX}mute @membre <durée> [raison]\`  (ex: 34s / 23m / 2h / 1j / 1h30m / 10minutes)`,
-          `• \`${PREFIX}unmute @membre\``,
-          `• \`${PREFIX}donnermembre\` → donne le rôle **${MEMBER_ROLE_NAME}** à tous ceux qui ne l’ont pas`,
-        ].join("\n")
-      );
-    }
-
-    // ===== JOIN =====
+    // ---------------- JOIN ----------------
     if (cmd === "join") {
-      const vc = message.member?.voice?.channel;
-      if (!vc) return message.reply("❌ Tu dois être dans un vocal.");
+      const voice = message.member.voice.channel;
+      if (!voice) return message.reply("❌ Tu dois être dans un vocal.");
 
-      const me = message.guild.members.me;
-      if (!me) return message.reply("❌ Impossible de récupérer le bot.");
-
-      // Perms vocal
-      const perms = vc.permissionsFor(me);
+      // permissions du bot
+      const perms = voice.permissionsFor(message.guild.members.me);
       if (!perms?.has(PermissionsBitField.Flags.Connect))
-        return message.reply("❌ Je n'ai pas la permission **Se connecter**.");
+        return message.reply("❌ Je n'ai pas la permission de me connecter.");
       if (!perms?.has(PermissionsBitField.Flags.Speak))
-        return message.reply("⚠️ Je peux rejoindre, mais je n'ai pas **Parler**.");
+        return message.reply("❌ Je n'ai pas la permission de parler.");
 
-      // (Re)join
-      const connection = joinVoiceChannel({
-        channelId: vc.id,
+      joinVoiceChannel({
+        channelId: voice.id,
         guildId: message.guild.id,
         adapterCreator: message.guild.voiceAdapterCreator,
         selfDeaf: false,
-        selfMute: false,
       });
 
-      try {
-        await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
-      } catch {
-        // Si pas "Ready", on détruit la connexion
-        try {
-          connection.destroy();
-        } catch {}
-        return message.reply("❌ Problème pour rejoindre le vocal (connexion).");
-      }
-
-      return message.channel.send(
-  `✅ Je rejoins **"${vc.name}"**`
-);
+      return message.reply(`✅ Je rejoins le vocal **${voice.name}**.`);
     }
 
-    // ===== LEAVE =====
+    // ---------------- LEAVE ----------------
     if (cmd === "leave") {
       const connection = getVoiceConnection(message.guild.id);
       if (!connection) return message.reply("❌ Je ne suis dans aucun vocal.");
 
-      try {
-        connection.destroy(); // ← ça quitte vraiment
-      } catch (e) {
-        console.error(e);
-        return message.reply("❌ Erreur en quittant le vocal.");
-      }
+      // On essaye d'afficher le nom du vocal si possible
+      const channel = message.guild.channels.cache.get(connection.joinConfig.channelId);
+      connection.destroy();
 
-      return message.reply("👋 Je quitte le vocal.");
+      return message.reply(
+        `👋 Je quitte le vocal${channel?.name ? ` **${channel.name}**` : ""}.`
+      );
     }
 
-    // ===== BAN =====
+    // ---------------- BAN ----------------
     if (cmd === "ban") {
-      if (!hasPerm(message.member, PermissionsBitField.Flags.BanMembers)) {
+      if (!message.member.permissions.has(PermissionsBitField.Flags.BanMembers))
         return message.reply("❌ Tu n'as pas la permission **Bannir des membres**.");
-      }
-
-      const target = message.mentions.members.first();
-      if (!target) return message.reply(`❌ Utilisation : \`${PREFIX}ban @membre [raison]\``);
-
-      const me = message.guild.members.me;
-      if (!me) return message.reply("❌ Impossible de récupérer le bot.");
-
-      if (!hasPerm(me, PermissionsBitField.Flags.BanMembers)) {
+      if (!message.guild.members.me.permissions.has(PermissionsBitField.Flags.BanMembers))
         return message.reply("❌ Je n'ai pas la permission **Bannir des membres**.");
-      }
 
-      if (!canModerate(me, target)) {
-        return message.reply("❌ Je ne peux pas bannir ce membre (hiérarchie/rôle).");
-      }
+      const targetArg = args.shift();
+      const member = getMemberFromMention(message, targetArg);
+      if (!member) return message.reply("❌ Utilisation : `!ban @membre raison`");
 
-      const reason = args.slice(1).join(" ") || "Aucune raison";
+      const reason = args.join(" ") || "Aucune raison";
+      if (!member.bannable) return message.reply("❌ Impossible de bannir (hiérarchie).");
 
-      try {
-        await target.ban({ reason });
-        return message.reply(`✅ **${target.user.tag}** a été banni.`);
-      } catch (err) {
-        console.error(err);
-        return message.reply("❌ Impossible de bannir (permissions/hierarchie/erreur Discord).");
-      }
+      await member.ban({ reason });
+      return message.reply(`🔨 **${member.user.username}** banni.\n📝 Raison : ${reason}`);
     }
 
-    // ===== UNBAN (sans raison) =====
+    // ---------------- UNBAN (sans raison) ----------------
     if (cmd === "unban") {
-      if (!hasPerm(message.member, PermissionsBitField.Flags.BanMembers)) {
+      if (!message.member.permissions.has(PermissionsBitField.Flags.BanMembers))
         return message.reply("❌ Tu n'as pas la permission **Bannir des membres**.");
-      }
-
-      const id = args[0];
-      if (!id || !/^\d{16,20}$/.test(id)) {
-        return message.reply(`❌ Utilisation : \`${PREFIX}unban <ID>\``);
-      }
-
-      const me = message.guild.members.me;
-      if (!me) return message.reply("❌ Impossible de récupérer le bot.");
-      if (!hasPerm(me, PermissionsBitField.Flags.BanMembers)) {
+      if (!message.guild.members.me.permissions.has(PermissionsBitField.Flags.BanMembers))
         return message.reply("❌ Je n'ai pas la permission **Bannir des membres**.");
-      }
+
+      const userId = args.shift();
+      if (!userId) return message.reply("❌ Utilisation : `!unban ID`");
 
       try {
-        await message.guild.members.unban(id);
-        return message.reply(`✅ ID **${id}** a été débanni.`);
-      } catch (err) {
-        console.error(err);
-        return message.reply("❌ Impossible de débannir (ID invalide ou pas banni).");
+        await message.guild.members.unban(userId);
+        return message.reply(`✅ ID **${userId}** unban.`);
+      } catch {
+        return message.reply("❌ ID invalide ou personne pas bannie.");
       }
     }
 
-    // ===== MUTE (timeout) =====
+    // ---------------- MUTE (timeout) ----------------
     if (cmd === "mute") {
-      if (!hasPerm(message.member, PermissionsBitField.Flags.ModerateMembers)) {
+      if (!message.member.permissions.has(PermissionsBitField.Flags.ModerateMembers))
         return message.reply("❌ Tu n'as pas la permission **Modérer des membres**.");
-      }
-
-      const target = message.mentions.members.first();
-      if (!target) {
-        return message.reply(`❌ Utilisation : \`${PREFIX}mute @membre 10m [raison]\``);
-      }
-
-      const me = message.guild.members.me;
-      if (!me) return message.reply("❌ Impossible de récupérer le bot.");
-
-      if (!hasPerm(me, PermissionsBitField.Flags.ModerateMembers)) {
+      if (!message.guild.members.me.permissions.has(PermissionsBitField.Flags.ModerateMembers))
         return message.reply("❌ Je n'ai pas la permission **Modérer des membres**.");
+
+      const targetArg = args.shift();
+      const timeArg = args.shift(); // ex: 37s, 10m, 2h, 1j
+      const member = getMemberFromMention(message, targetArg);
+
+      if (!member || !timeArg) {
+        return message.reply("❌ Utilisation : `!mute @membre 10m raison`");
       }
 
-      if (!canModerate(me, target)) {
-        return message.reply("❌ Je ne peux pas mute ce membre (hiérarchie/rôle).");
+      const durationMs = parseDuration(timeArg);
+      if (!durationMs) {
+        return message.reply("❌ Format invalide. Ex : `34s`, `23m`, `23min`, `2h`, `1j`");
       }
 
-      const durationRaw = args[1]; // ex: 10m, 1h30m, 23min
-      if (!durationRaw) {
-        return message.reply(`❌ Utilisation : \`${PREFIX}mute @membre 10m [raison]\``);
-      }
-
-      const parsed = parseDurationToMs(durationRaw);
-      if (!parsed) {
-        return message.reply("❌ Format invalide. Ex: `34s` / `23m` / `2h` / `1j` / `1h30m` / `10minutes`");
-      }
-      if (parsed.error === "TOO_LONG") {
-        return message.reply("❌ Trop long : maximum **28 jours**.");
-      }
-
-      const reason = args.slice(2).join(" ") || "Aucune raison";
+      const reason = args.join(" ") || "Aucune raison";
 
       try {
-        await target.timeout(parsed.ms, reason);
+        await member.timeout(durationMs, reason);
+
+        const pretty = prettyDuration(durationMs);
         return message.reply(
-          `✅ **${target.user.tag}** est mute pour **${durationRaw}**.`
+          `🔇 **${member.user.username}** mute **${pretty}**\n📝 Raison : ${reason}`
         );
       } catch (err) {
         console.error(err);
-        return message.channel.send(
-  `🔇 ${target.user.tag} mute ${durationRaw}\n📝 Raison : ${reason}`
-);
+        return message.reply("❌ Impossible de mute (permissions/hiérarchie/erreur Discord).");
       }
     }
 
-    // ===== UNMUTE =====
+    // ---------------- UNMUTE (remove timeout) ----------------
     if (cmd === "unmute") {
-      if (!hasPerm(message.member, PermissionsBitField.Flags.ModerateMembers)) {
+      if (!message.member.permissions.has(PermissionsBitField.Flags.ModerateMembers))
         return message.reply("❌ Tu n'as pas la permission **Modérer des membres**.");
-      }
-
-      const target = message.mentions.members.first();
-      if (!target) return message.reply(`❌ Utilisation : \`${PREFIX}unmute @membre\``);
-
-      const me = message.guild.members.me;
-      if (!me) return message.reply("❌ Impossible de récupérer le bot.");
-      if (!hasPerm(me, PermissionsBitField.Flags.ModerateMembers)) {
+      if (!message.guild.members.me.permissions.has(PermissionsBitField.Flags.ModerateMembers))
         return message.reply("❌ Je n'ai pas la permission **Modérer des membres**.");
-      }
+
+      const targetArg = args.shift();
+      const member = getMemberFromMention(message, targetArg);
+      if (!member) return message.reply("❌ Utilisation : `!unmute @membre`");
 
       try {
-        await target.timeout(null);
-        return message.channel.send(
-  `🔊 ${target.user.tag} unmute.`
-);
+        await member.timeout(null);
+        return message.reply(`🔊 **${member.user.username}** unmute.`);
       } catch (err) {
         console.error(err);
-        return message.reply("❌ Impossible d'unmute (permissions/erreur Discord).");
+        return message.reply("❌ Impossible de unmute (permissions/hiérarchie/erreur Discord).");
       }
     }
 
-    // ===== DONNER ROLE MEMBRE A TOUT LE MONDE =====
+    // ---------------- DONNERMEMBRE ----------------
     if (cmd === "donnermembre") {
-      if (!hasPerm(message.member, PermissionsBitField.Flags.ManageRoles)) {
+      // permission admin conseillée
+      if (!message.member.permissions.has(PermissionsBitField.Flags.ManageRoles))
         return message.reply("❌ Tu n'as pas la permission **Gérer les rôles**.");
-      }
-
-      const me = message.guild.members.me;
-      if (!me) return message.reply("❌ Impossible de récupérer le bot.");
-      if (!hasPerm(me, PermissionsBitField.Flags.ManageRoles)) {
+      if (!message.guild.members.me.permissions.has(PermissionsBitField.Flags.ManageRoles))
         return message.reply("❌ Je n'ai pas la permission **Gérer les rôles**.");
-      }
 
-      const role = message.guild.roles.cache.find(
-        (r) => r.name.toLowerCase() === MEMBER_ROLE_NAME.toLowerCase()
-      );
-      if (!role) return message.reply(`❌ Rôle introuvable : **${MEMBER_ROLE_NAME}**`);
+      const roleName = "Membre";
+      const role = message.guild.roles.cache.find((r) => r.name === roleName);
+      if (!role) return message.reply(`❌ Le rôle **${roleName}** n'existe pas.`);
 
-      // Le bot doit être au-dessus du rôle
-      if (role.position >= me.roles.highest.position) {
-        return message.reply("❌ Le rôle **membre** est au-dessus (ou égal) au rôle du bot. Monte le rôle du bot.");
-      }
+      // prendre tous les membres (cache)
+      await message.guild.members.fetch();
 
-      await message.reply("⏳ Je donne le rôle à ceux qui ne l'ont pas...");
+      const members = message.guild.members.cache.filter((m) => !m.user.bot);
 
       let added = 0;
-      let checked = 0;
-
-      const members = await message.guild.members.fetch();
-      for (const [, m] of members) {
-        checked++;
-        if (m.user.bot) continue;
-        if (m.roles.cache.has(role.id)) continue;
-
-        try {
-          await m.roles.add(role);
-          added++;
-        } catch (e) {
-          // on ignore les erreurs individuelles (permissions etc.)
+      for (const m of members.values()) {
+        // "aucun rôle" = uniquement @everyone => roles.size === 1
+        if (m.roles.cache.size === 1) {
+          if (!m.roles.cache.has(role.id)) {
+            try {
+              await m.roles.add(role);
+              added++;
+            } catch (e) {
+              // ignore erreurs (hiérarchie)
+            }
+          }
         }
       }
 
-      return message.channel.send(
-        `✅ Terminé. Ajouté à **${added}** membres (sur **${checked}**).`
-      );
+      return message.reply(`✅ Rôle **${roleName}** donné à **${added}** membre(s) sans rôle.`);
     }
 
-    // Si commande inconnue
-    return message.reply(`❓ Commande inconnue. Tape \`${PREFIX}help\`.`);
   } catch (err) {
     console.error(err);
-    try {
-      return message.reply("❌ Erreur interne.");
-    } catch {}
   }
 });
 
