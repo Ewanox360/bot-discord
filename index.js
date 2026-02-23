@@ -44,18 +44,14 @@ client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
   if (!message.guild) return;
 
-  // ✅ Autoriser si l'utilisateur a la permission ADMINISTRATOR
-  if (message.member.permissions.has(PermissionsBitField.Flags.Administrator)) return;
-
-  // ✅ Autoriser si l'utilisateur a le rôle "Admin"
+  // ✅ Autorise UNIQUEMENT le rôle "Admin"
   if (message.member.roles.cache.some(role => role.name === "Admin")) return;
 
-  // 🔗 Détection lien (http/https + discord.gg + www)
   const linkRegex = /(https?:\/\/|www\.|discord\.gg\/|discord\.com\/invite\/)/i;
 
   if (linkRegex.test(message.content)) {
     await message.delete().catch(() => {});
-    message.channel.send(`🚫 ${message.author}, les liens sont interdits ici.`)
+    message.channel.send(`🚫 ${message.author}, les liens sont interdits.`)
       .then(msg => setTimeout(() => msg.delete().catch(() => {}), 4000));
   }
 });
