@@ -23,6 +23,23 @@ client.once("ready", () => {
   console.log(`✅ Connecté en tant que ${client.user.tag}`);
 });
 
+client.on("messageCreate", async (message) => {
+  if (message.author.bot) return;
+  if (!message.guild) return;
+
+  if (message.member.permissions.has("Administrator")) return;
+
+  const linkRegex =
+    /(https?:\/\/\S+)|(www\.\S+)|(discord\.gg\/\S+)|(\b\S+\.(com|fr|net|org|gg|io|me|tv|be|xyz)\b)/i;
+
+  if (!linkRegex.test(message.content)) return;
+
+  await message.delete().catch(() => {});
+  await message.author.send(
+    `🚫 Les liens sont interdits sur ${message.guild.name}.`
+  ).catch(() => {});
+});
+
 // -------- Utils --------
 
 function parseDuration(input) {
