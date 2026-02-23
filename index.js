@@ -21,8 +21,8 @@ if (!TOKEN) {
 }
 
 // 🔥 ON CHARGE LES FICHIERS
-require("./commands/antiLink")(client);
-require("./commands/moderation")(client, PREFIX);
+require("./commands/antiLink.js")(client);
+require("./commands/moderation.js")(client, PREFIX);
 
 client.once("ready", () => {
   console.log(`✅ Connecté en tant que ${client.user.tag}`);
