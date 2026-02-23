@@ -1,3 +1,5 @@
+const { PermissionsBitField } = require("discord.js");
+
 module.exports = (client) => {
 
   const linkRegex = /https?:\/\/[^\s]+/i;
@@ -10,7 +12,7 @@ module.exports = (client) => {
     if (!message.guild) return;
 
     // Optionnel : ignorer les admins
-    if (message.member && message.member.permissions && message.member.permissions.has("ADMINISTRATOR")) return;
+    if (message.member && message.member.permissions && message.member.permissions.has(PermissionsBitField.Flags.Administrator)) return;
 
     if (linkRegex.test(message.content)) {
 
